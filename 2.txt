@@ -1,0 +1,1 @@
+bash: ech: command not found
