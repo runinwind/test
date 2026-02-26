@@ -16,7 +16,7 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 import xml.etree.ElementTree as ET
 
 
@@ -29,12 +29,89 @@ POS_RE = re.compile(
     r")(?:\.|/|\b)",
     re.IGNORECASE,
 )
+HEAD_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9'’._-]*$")
+ENTRY_COLON_RE = re.compile(r"^(.+?)\s*[:：]\s*(.*)$")
+CJK_RE = re.compile(r"[\u3400-\u4DBF\u4E00-\u9FFF]")
 
 
 @dataclass
 class Entry:
     word: str
     detail: str
+
+
+def is_english_term(text: str, max_words: int = 8) -> bool:
+    cleaned = (
+        text.strip()
+        .replace(",", " ")
+        .replace("，", " ")
+        .replace("/", " ")
+        .replace("、", " ")
+        .replace(";", " ")
+        .replace("&", " ")
+    )
+    if not cleaned:
+        return False
+    tokens = cleaned.split()
+    if not (1 <= len(tokens) <= max_words):
+        return False
+    return all(HEAD_TOKEN_RE.match(tok) for tok in tokens)
+
+
+def split_word_variants(word: str) -> List[str]:
+    text = word.strip()
+    if not text:
+        return []
+
+    # Split compact synonym heads like "cater, crater".
+    if any(sep in text for sep in [",", "，", "/", "、"]):
+        parts = [p.strip() for p in re.split(r"\s*[,/，、]\s*", text) if p.strip()]
+        if len(parts) > 1 and all(is_english_term(p, max_words=3) for p in parts):
+            return parts
+    return [text]
+
+
+def parse_entry_head(line: str) -> Optional[Tuple[str, str]]:
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    if "\t" in stripped:
+        first, rest = stripped.split("\t", 1)
+        if is_english_term(first):
+            return first.strip(), rest.strip()
+
+    colon_match = ENTRY_COLON_RE.match(stripped)
+    if colon_match:
+        head, rest = colon_match.groups()
+        if is_english_term(head):
+            return head.strip(), rest.strip()
+
+    parts = stripped.split(maxsplit=1)
+    if parts and HEAD_TOKEN_RE.match(parts[0]):
+        word = parts[0]
+        if len(parts) == 1:
+            return word, ""
+        remainder = parts[1].lstrip()
+        if not remainder:
+            return word, ""
+        if POS_RE.match(remainder):
+            return word, remainder
+        if remainder[0] in "[/(【［（":
+            return word, remainder
+        if CJK_RE.match(remainder):
+            return word, remainder
+
+    # Handle multi-word heads like "immune system 免疫系统".
+    m = CJK_RE.search(stripped)
+    if m:
+        idx = m.start()
+        head = stripped[:idx].strip()
+        rest = stripped[idx:].strip()
+        if rest and is_english_term(head, max_words=8):
+            return head, rest
+
+    return None
 
 
 def col_letters(cell_ref: str) -> str:
@@ -114,33 +191,7 @@ def read_a_b_columns(xlsx_path: Path) -> List[Tuple[str, str]]:
 
 
 def is_probable_new_entry_line(line: str) -> bool:
-    stripped = line.strip()
-    if not stripped:
-        return False
-
-    if "\t" in stripped:
-        first, _ = stripped.split("\t", 1)
-        return bool(WORD_RE.match(first))
-
-    parts = stripped.split(maxsplit=1)
-    if not parts:
-        return False
-    word = parts[0]
-    if not WORD_RE.match(word):
-        return False
-
-    if len(parts) == 1:
-        return True
-
-    remainder = parts[1].lstrip()
-    if not remainder:
-        return True
-    if POS_RE.match(remainder):
-        return True
-    if remainder[0] in "[/(【［":
-        return True
-
-    return False
+    return parse_entry_head(line) is not None
 
 
 def split_entries(cell_text_value: str) -> List[Entry]:
@@ -157,28 +208,27 @@ def split_entries(cell_text_value: str) -> List[Entry]:
         current_detail_lines = []
 
     for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
+        stripped_line = raw_line.strip()
+        if not stripped_line:
             if current_word is not None and current_detail_lines:
                 current_detail_lines.append("")
             continue
 
-        if is_probable_new_entry_line(line):
+        # Indented lines are usually continuation/example lines.
+        has_indent = raw_line[:1].isspace()
+        parsed = None if (has_indent and current_word is not None) else parse_entry_head(raw_line)
+        if parsed is not None:
             flush()
-            if "\t" in line:
-                word, detail = line.split("\t", 1)
-                current_word = word.strip()
-                current_detail_lines = [detail.strip()]
-            else:
-                parts = line.split(maxsplit=1)
-                current_word = parts[0].strip()
-                current_detail_lines = [parts[1].strip()] if len(parts) > 1 else [""]
+            word, detail = parsed
+            current_word = word
+            current_detail_lines = [detail]
         else:
             if current_word is None:
-                current_word = line
-                current_detail_lines = [""]
+                if is_english_term(stripped_line, max_words=8):
+                    current_word = stripped_line
+                    current_detail_lines = [""]
             else:
-                current_detail_lines.append(line)
+                current_detail_lines.append(stripped_line)
 
     flush()
     return entries
@@ -191,7 +241,8 @@ def transform_rows(rows: Sequence[Tuple[str, str]]) -> List[Tuple[str, str, str]
             continue
         entries = split_entries(col2)
         for e in entries:
-            output.append((col1, e.word, e.detail))
+            for w in split_word_variants(e.word):
+                output.append((col1, w, e.detail))
     return output
 
 
@@ -203,6 +254,14 @@ def run_self_test() -> None:
     assert "常见搭配" in parsed[0].detail
     assert parsed[2].word == "able"
     assert "be able to" in parsed[2].detail
+    parsed = split_entries("participate 参与\nimmune system 免疫系统\nstring: 细绳\n  China has vast deserts 中国有广袤的沙漠")
+    assert len(parsed) == 3, parsed
+    assert parsed[0].word == "participate"
+    assert parsed[1].word == "immune system"
+    assert parsed[2].word == "string"
+    assert "China has vast deserts" in parsed[2].detail
+    expanded = transform_rows([("", "cater, crater 火山口")])
+    assert [r[1] for r in expanded] == ["cater", "crater"], expanded
     print("self-test passed")
 
 
