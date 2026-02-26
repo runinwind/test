@@ -10,13 +10,13 @@
 ## 用法
 
 ```bash
-python split_vocab_xlsx.py 单词.xlsx -o 单词_拆分结果.csv
+python split_vocab_xlsx.py dict.xlsx -o dict_result.csv
 ```
 
 也可以在当前目录只有一个 `.xlsx` 文件时省略输入文件名：
 
 ```bash
-python split_vocab_xlsx.py -o 单词_拆分结果.csv
+python split_vocab_xlsx.py -o dict_result.csv
 ```
 
 如果你想先验证解析逻辑：
@@ -34,11 +34,3 @@ python split_vocab_xlsx.py --self-test
 
 
 ## 常见问题（GitHub 文件读不到）
-
-如果你在受限网络环境里看到 `Tunnel connection failed: 403 Forbidden`，通常是运行环境代理策略导致，
-不是脚本本身的问题。此时请优先把 `单词.xlsx` 直接放到脚本所在目录再执行。
-
-也可以用以下两种地址（注意中文文件名需要 URL 编码）：
-
-- GitHub 页面地址（用于浏览）：`https://github.com/runinwind/test/blob/master/%E5%8D%95%E8%AF%8D.xlsx`
-- Raw 直链地址（用于程序下载）：`https://raw.githubusercontent.com/runinwind/test/master/%E5%8D%95%E8%AF%8D.xlsx`
