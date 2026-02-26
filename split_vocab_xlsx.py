@@ -71,7 +71,7 @@ def split_word_variants(word: str) -> List[str]:
     return [text]
 
 
-def parse_entry_head(line: str) -> Optional[Tuple[str, str]]:
+def parse_entry_head(line: str, allow_multiword_cjk: bool = True) -> Optional[Tuple[str, str]]:
     stripped = line.strip()
     if not stripped:
         return None
@@ -103,13 +103,14 @@ def parse_entry_head(line: str) -> Optional[Tuple[str, str]]:
             return word, remainder
 
     # Handle multi-word heads like "immune system 免疫系统".
-    m = CJK_RE.search(stripped)
-    if m:
-        idx = m.start()
-        head = stripped[:idx].strip()
-        rest = stripped[idx:].strip()
-        if rest and is_english_term(head, max_words=8):
-            return head, rest
+    if allow_multiword_cjk:
+        m = CJK_RE.search(stripped)
+        if m:
+            idx = m.start()
+            head = stripped[:idx].strip()
+            rest = stripped[idx:].strip()
+            if rest and is_english_term(head, max_words=8):
+                return head, rest
 
     return None
 
@@ -216,7 +217,11 @@ def split_entries(cell_text_value: str) -> List[Entry]:
 
         # Indented lines are usually continuation/example lines.
         has_indent = raw_line[:1].isspace()
-        parsed = None if (has_indent and current_word is not None) else parse_entry_head(raw_line)
+        if has_indent and current_word is not None:
+            # For indented lines, only accept stronger head signals to avoid splitting examples.
+            parsed = parse_entry_head(raw_line, allow_multiword_cjk=False)
+        else:
+            parsed = parse_entry_head(raw_line)
         if parsed is not None:
             flush()
             word, detail = parsed
@@ -254,12 +259,17 @@ def run_self_test() -> None:
     assert "常见搭配" in parsed[0].detail
     assert parsed[2].word == "able"
     assert "be able to" in parsed[2].detail
-    parsed = split_entries("participate 参与\nimmune system 免疫系统\nstring: 细绳\n  China has vast deserts 中国有广袤的沙漠")
-    assert len(parsed) == 3, parsed
+    parsed = split_entries(
+        "participate 参与\nimmune system 免疫系统\nstring: 细绳\n"
+        "  proper 适当的\n  symbol n. 象征。\n  China has vast deserts 中国有广袤的沙漠"
+    )
+    assert len(parsed) == 5, parsed
     assert parsed[0].word == "participate"
     assert parsed[1].word == "immune system"
     assert parsed[2].word == "string"
-    assert "China has vast deserts" in parsed[2].detail
+    assert parsed[3].word == "proper"
+    assert parsed[4].word == "symbol"
+    assert "China has vast deserts" in parsed[4].detail
     expanded = transform_rows([("", "cater, crater 火山口")])
     assert [r[1] for r in expanded] == ["cater", "crater"], expanded
     print("self-test passed")
